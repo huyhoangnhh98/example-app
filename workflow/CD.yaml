@@ -1,0 +1,117 @@
+name: CD deploy to k8s
+
+on:
+  push:
+    branches:
+      - prod
+      - develop
+      - staging
+  workflow_run:
+    workflows: 
+    - CI build and run unit test
+    types: 
+    - completed
+    branches:
+    - prod
+    - develop
+    - staging
+
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  ECR_DEV_REPOSITORY: ${{ secrets.ECR_DEV_REPOSITORY }}
+  ECR_STAGING_REPOSITORY: ${{ secrets.ECR_STAGING_REPOSITORY }}
+  ECR_PROD_REPOSITORY: ${{ secrets.ECR_PROD_REPOSITORY }}
+  SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+jobs:
+  ci:
+    uses: ./workflows/CI.yml
+
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    needs: ci
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+      timeout-minutes: 1
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
+
+    - name: Build, tag, and push image to Amazon ECR DEV
+      if: github.ref == 'refs/heads/develop' && github.event_name == 'push'
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        IMAGE_TAG: ${{ github.sha }}
+      run: |
+        echo "Build docker image"
+        docker build -t $ECR_REGISTRY/$ECR_DEV_REPOSITORY:$IMAGE_TAG -t $ECR_REGISTRY/$ECR_DEV_REPOSITORY:latest . --platform=linux/x86_64
+        echo "Build docker image success"
+        echo "Push docker image"
+        docker push $ECR_REGISTRY/$ECR_DEV_REPOSITORY:$IMAGE_TAG
+        docker push $ECR_REGISTRY/$ECR_DEV_REPOSITORY:latest
+        echo "Push docker image success"
+        echo "image=$ECR_REGISTRY/$ECR_DEV_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+        echo "latest_image=$ECR_REGISTRY/$ECR_DEV_REPOSITORY:latest" >> $GITHUB_OUTPUT
+        echo "image_tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+    - name: Build, tag, and push image to Amazon ECR STAGING
+      if: github.ref == 'refs/heads/staging' && github.event_name == 'push'
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        IMAGE_TAG: ${{ github.sha }}
+      run: |
+        echo "Build docker image"
+        docker build -t $ECR_REGISTRY/$ECR_STAGING_REPOSITORY:$IMAGE_TAG -t $ECR_REGISTRY/$ECR_STAGING_REPOSITORY:latest . --platform=linux/x86_64
+        echo "Build docker image success"
+        echo "Push docker image"
+        docker push $ECR_REGISTRY/$ECR_STAGING_REPOSITORY:$IMAGE_TAG
+        docker push $ECR_REGISTRY/$ECR_STAGING_REPOSITORY:latest
+        echo "Push docker image success"
+        echo "image=$ECR_REGISTRY/$ECR_STAGING_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+        echo "latest_image=$ECR_REGISTRY/$ECR_STAGING_REPOSITORY:latest" >> $GITHUB_OUTPUT
+        echo "image_tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+    - name: Build, tag, and push image to Amazon ECR PROD
+      if: github.ref == 'refs/heads/prod' && github.event_name == 'push'
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        IMAGE_TAG: ${{ github.sha }}
+      run: |
+        echo "Build docker image"
+        docker build -t $ECR_REGISTRY/$ECR_PROD_REPOSITORY:$IMAGE_TAG -t $ECR_REGISTRY/$ECR_PROD_REPOSITORY:latest . --platform=linux/x86_64
+        echo "Build docker image success"
+        echo "Push docker image"
+        docker push $ECR_REGISTRY/$ECR_PROD_REPOSITORY:$IMAGE_TAG
+        docker push $ECR_REGISTRY/$ECR_PROD_REPOSITORY:latest
+        echo "Push docker image success"
+        echo "image=$ECR_REGISTRY/$ECR_PROD_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+        echo "latest_image=$ECR_REGISTRY/$ECR_PROD_REPOSITORY:latest" >> $GITHUB_OUTPUT
+        echo "image_tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+    - name: Trigger deploy workflow
+      uses: peter-evans/repository-dispatch@v1
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        repository: app-deployment
+        event-type: deploy
+        client-payload: '{"image": "${{ steps.build-and-push.outputs.image }}", "image_tag": "${{ steps.build-and-push.outputs.image_tag }}", "environment": "${{ github.ref_name }}"}'
+
+  notify:
+    runs-on: ubuntu-latest
+    needs: build-and-deploy
+    steps:
+      - name: Send notification to Slack
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          fields: repo,message,commit,author,action,eventName,ref,workflow,job,took
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

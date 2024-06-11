@@ -1,0 +1,39 @@
+name: CI build and run unit test
+
+on:
+  push:
+  pull_request:
+  workflow_call:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - uses: pnpm/action-setup@v3
+      with:
+        version: 8.10.5
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '22'
+        cache: 'npm'
+
+    - name: Install dependencies
+      run: npm install
+
+    - name: Unit Test
+      run: npm test
+
+    - name: Automation Test
+      run: selenium test
+
+    ## add sonarqube and synk scan
+    - name: Sonar Scan
+      run: sonar-scanner -Dsonar.projectKey=nextjs-sonarqube -Dsonar.organization=sonarqube -Dsonar.sources=. -Dsonar.host.url=http://localhost:9000 -Dsonar.login=sonarqube
+
+    - name: Synk scan
+      run: synk test
